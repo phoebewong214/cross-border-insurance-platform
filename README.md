@@ -181,8 +181,8 @@ Developed as part of **ISOM4007** at the University of Macau (2025)
 
 ## 📄 Documentation
 
-- [User Manual.docx](./User%20Manual.docx)
-- [Final Report.docx](./Final%20Report.docx)
+- [User Manual](./User%20Manual%202.docx)
+- [Final Report](./Final%20Report%202.docx)
 - [002-Group5-Digitizing Cross-boundary Private Car Insurance.docx](./002-Group5-Digitizing%20Cross-boundary%20Private%20Car%20Insurance.docx)
 ---
 
