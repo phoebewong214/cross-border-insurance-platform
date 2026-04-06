@@ -181,8 +181,8 @@ Developed as part of **ISOM4007** at the University of Macau (2025)
 
 ## 📄 Documentation
 
-- [`User_Manual.docx`](./User_Manual.docx) — End-user guide for the platform
-- [`Final_Report.docx`](./Final_Report.docx) — System design & requirements report
+- [`User_Manual.docx`](./User Manual.docx) — End-user guide for the platform
+- [`Final_Report.docx`](./Final Report.docx) — System design & requirements report
 - [`002-Group5-Digitizing Cross-boundary Private Car Insurance.docx`](./002-Group5-Digitizing%20Cross-boundary%20Private%20Car%20Insurance.docx) — Project proposal & business case
 - 
 
