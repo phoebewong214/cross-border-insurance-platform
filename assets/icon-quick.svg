@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="80" height="80" viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
+    <style>
+        .clock { fill: none; stroke: #01459C; stroke-width: 3; }
+        .hand { fill: none; stroke: #01459C; stroke-width: 3; }
+        .arrow { fill: #01459C; }
+    </style>
+    <circle class="clock" cx="40" cy="40" r="30"/>
+    <path class="hand" d="M40,40 L40,20"/>
+    <path class="hand" d="M40,40 L55,40"/>
+    <path class="arrow" d="M65,40 L75,40 L70,35 L75,40 L70,45 Z"/>
+</svg> 

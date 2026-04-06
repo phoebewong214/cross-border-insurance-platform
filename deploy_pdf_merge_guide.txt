@@ -1,0 +1,166 @@
+PDF 合併功能部署指南
+===================
+
+本指南說明如何在雲服務器上部署 PDF 合併功能。
+
+1. 系統要求
+-----------
+- PHP 7.4 或更高版本
+- Apache/Nginx Web 服務器
+- pdftk 工具
+- 足夠的磁盤空間用於臨時文件
+
+2. 安裝 pdftk
+-------------
+根據您的操作系統選擇相應的安裝命令：
+
+Ubuntu/Debian:
+    sudo apt-get update
+    sudo apt-get install pdftk
+
+CentOS/RHEL:
+    sudo yum install pdftk
+
+Amazon Linux:
+    sudo yum install pdftk
+
+3. 配置 PHP
+-----------
+1. 確保 PHP 有執行外部命令的權限：
+   - 檢查 php.ini 中的 disable_functions 設置
+   - 確保 exec 函數未被禁用
+
+2. 設置適當的文件權限：
+   ```bash
+   sudo chown -R www-data:www-data /path/to/your/web/root
+   sudo chmod -R 755 /path/to/your/web/root
+   ```
+
+3. 創建並設置臨時目錄權限：
+   ```bash
+   sudo mkdir -p /path/to/your/web/root/temp
+   sudo chown -R www-data:www-data /path/to/your/web/root/temp
+   sudo chmod -R 777 /path/to/your/web/root/temp
+   ```
+
+4. 修改代碼中的路徑
+------------------
+在 merge_pdfs.php 中修改以下路徑：
+
+1. 臨時目錄路徑：
+   ```php
+   $tempDir = '/path/to/your/web/root/temp/pdf_merge_' . uniqid();
+   ```
+
+2. pdftk 路徑：
+   ```php
+   $pdftkPath = '/usr/bin/pdftk';  // 使用 which pdftk 命令確認實際路徑
+   ```
+
+5. 安全配置
+----------
+1. 確保臨時目錄不在 Web 根目錄下：
+   ```bash
+   sudo mkdir -p /var/tmp/pdf_merge
+   sudo chown -R www-data:www-data /var/tmp/pdf_merge
+   sudo chmod -R 777 /var/tmp/pdf_merge
+   ```
+
+2. 在 Apache 配置中添加安全規則：
+   ```apache
+   <Directory /var/tmp/pdf_merge>
+       Order deny,allow
+       Deny from all
+   </Directory>
+   ```
+
+6. 錯誤處理
+----------
+1. 確保錯誤日誌可寫：
+   ```bash
+   sudo touch /var/log/pdf_merge.log
+   sudo chown www-data:www-data /var/log/pdf_merge.log
+   sudo chmod 666 /var/log/pdf_merge.log
+   ```
+
+2. 在 PHP 代碼中設置錯誤日誌：
+   ```php
+   ini_set('error_log', '/var/log/pdf_merge.log');
+   ```
+
+7. 性能優化
+----------
+1. 定期清理臨時文件：
+   ```bash
+   # 添加到 crontab
+   0 0 * * * find /var/tmp/pdf_merge -type f -mtime +1 -delete
+   ```
+
+2. 設置文件上傳限制：
+   ```php
+   // 在 php.ini 中設置
+   upload_max_filesize = 10M
+   post_max_size = 10M
+   max_execution_time = 300
+   ```
+
+8. 監控和維護
+------------
+1. 定期檢查錯誤日誌：
+   ```bash
+   tail -f /var/log/pdf_merge.log
+   ```
+
+2. 監控磁盤使用情況：
+   ```bash
+   du -sh /var/tmp/pdf_merge
+   ```
+
+9. 故障排除
+----------
+如果遇到問題，請檢查：
+
+1. pdftk 是否正確安裝：
+   ```bash
+   which pdftk
+   pdftk --version
+   ```
+
+2. 文件權限：
+   ```bash
+   ls -l /var/tmp/pdf_merge
+   ```
+
+3. PHP 錯誤日誌：
+   ```bash
+   tail -f /var/log/php_errors.log
+   ```
+
+4. Web 服務器錯誤日誌：
+   ```bash
+   tail -f /var/log/apache2/error.log  # Apache
+   tail -f /var/log/nginx/error.log    # Nginx
+   ```
+
+10. 備份策略
+----------
+1. 定期備份配置文件：
+   ```bash
+   # 添加到 crontab
+   0 0 * * * tar -czf /backup/pdf_merge_config_$(date +%Y%m%d).tar.gz /path/to/your/web/root/pages/merge_pdfs.php
+   ```
+
+2. 保留最近 7 天的備份：
+   ```bash
+   find /backup -name "pdf_merge_config_*.tar.gz" -mtime +7 -delete
+   ```
+
+注意事項：
+---------
+1. 確保服務器有足夠的內存處理大型 PDF 文件
+2. 定期監控磁盤使用情況
+3. 設置適當的文件上傳限制
+4. 實施適當的安全措施
+5. 保持系統和 pdftk 更新到最新版本
+
+如有問題，請查看錯誤日誌並聯繫系統管理員。 

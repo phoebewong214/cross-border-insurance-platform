@@ -1,0 +1,8 @@
+{
+    "name": "isom4007/90percent",
+    "description": "ISOM4007 90% Project",
+    "type": "project",
+    "require": {
+        "setasign/fpdi": "^2.3"
+    }
+}

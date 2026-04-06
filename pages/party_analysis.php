@@ -1,0 +1,1633 @@
+<?php
+// 检查会话是否已启动
+if (session_status() == PHP_SESSION_NONE) {
+    session_start();
+}
+
+// 开发者模式开关
+$devMode = isset($_GET['dev_mode']) && $_GET['dev_mode'] == '1';
+
+// Database connection configuration
+$link = @mysqli_connect('localhost', 'root', '', 'insurance_system');
+if (!$link) {
+    die("Connection failed: " . mysqli_connect_error());
+}
+mysqli_query($link, 'SET NAMES utf8');
+
+// Get age distribution data
+$ageQuery = "SELECT 
+    CASE 
+        WHEN TIMESTAMPDIFF(YEAR, Date_of_Birth, CURDATE()) <= 25 THEN '18-25'
+        WHEN TIMESTAMPDIFF(YEAR, Date_of_Birth, CURDATE()) <= 35 THEN '26-35'
+        WHEN TIMESTAMPDIFF(YEAR, Date_of_Birth, CURDATE()) <= 45 THEN '36-45'
+        WHEN TIMESTAMPDIFF(YEAR, Date_of_Birth, CURDATE()) <= 55 THEN '46-55'
+        ELSE '55+'
+    END as age_group,
+    COUNT(*) as count
+    FROM party 
+    WHERE Date_of_Birth IS NOT NULL 
+    GROUP BY age_group
+    ORDER BY age_group";
+
+$result = mysqli_query($link, $ageQuery);
+$ageData = [];
+while ($row = mysqli_fetch_assoc($result)) {
+    $ageData[] = $row;
+}
+
+// Get filter conditions and prevent SQL injection
+$selectedTypes = isset($_GET['types']) ? array_map(function ($type) use ($link) {
+    return mysqli_real_escape_string($link, $type);
+}, $_GET['types']) : [];
+
+$selectedAgeGroups = isset($_GET['age_groups']) ? array_map(function ($group) use ($link) {
+    return mysqli_real_escape_string($link, $group);
+}, $_GET['age_groups']) : [];
+
+$selectedLicenseTypes = isset($_GET['license_types']) ? array_map(function ($type) use ($link) {
+    return mysqli_real_escape_string($link, $type);
+}, $_GET['license_types']) : [];
+
+// 使用从party_status_edit.php中设置的标准
+$selectedClaimRatio = isset($_SESSION['selected_claim_ratio']) ? $_SESSION['selected_claim_ratio'] : 'none';
+
+$selectedClaimRanges = isset($_GET['claim_ranges']) ? $_GET['claim_ranges'] : [];
+$selectedPremiumRanges = isset($_GET['premium_ranges']) ? $_GET['premium_ranges'] : [];
+
+// Build WHERE clause
+$conditions = [];
+
+if (!empty($selectedTypes)) {
+    $conditions[] = "Type IN ('" . implode("','", $selectedTypes) . "')";
+}
+
+if (!empty($selectedAgeGroups)) {
+    $ageConditions = array_map(function ($group) {
+        switch ($group) {
+            case '18-25':
+                return "(Type = 'Individual' AND TIMESTAMPDIFF(YEAR, Date_of_Birth, CURDATE()) <= 25)";
+            case '26-35':
+                return "(Type = 'Individual' AND TIMESTAMPDIFF(YEAR, Date_of_Birth, CURDATE()) BETWEEN 26 AND 35)";
+            case '36-45':
+                return "(Type = 'Individual' AND TIMESTAMPDIFF(YEAR, Date_of_Birth, CURDATE()) BETWEEN 36 AND 45)";
+            case '46-55':
+                return "(Type = 'Individual' AND TIMESTAMPDIFF(YEAR, Date_of_Birth, CURDATE()) BETWEEN 46 AND 55)";
+            case '55+':
+                return "(Type = 'Individual' AND TIMESTAMPDIFF(YEAR, Date_of_Birth, CURDATE()) > 55)";
+            case 'Company':
+                return "Type = 'Company'";
+            default:
+                return "";
+        }
+    }, $selectedAgeGroups);
+    $conditions[] = "(" . implode(" OR ", array_filter($ageConditions)) . ")";
+}
+
+if (!empty($selectedLicenseTypes)) {
+    $licenseConditions = array_map(function ($type) {
+        switch ($type) {
+            case 'B':
+                return "(Type = 'Individual' AND Date_of_B_class IS NOT NULL)";
+            case 'C':
+                return "(Type = 'Individual' AND Date_of_C_class IS NOT NULL)";
+            case 'Company':
+                return "Type = 'Company'";
+            default:
+                return "";
+        }
+    }, $selectedLicenseTypes);
+    $conditions[] = "(" . implode(" OR ", array_filter($licenseConditions)) . ")";
+}
+
+if (!empty($selectedClaimRanges)) {
+    $claimConditions = array_map(function ($range) {
+        list($min, $max) = explode('-', $range);
+        if ($max === '+') {
+            return "Total_Claim_Amount > " . intval($min);
+        }
+        return "Total_Claim_Amount BETWEEN " . intval($min) . " AND " . intval($max);
+    }, $selectedClaimRanges);
+    $conditions[] = "(" . implode(" OR ", $claimConditions) . ")";
+}
+
+if (!empty($selectedPremiumRanges)) {
+    $premiumConditions = array_map(function ($range) {
+        list($min, $max) = explode('-', $range);
+        if ($max === '+') {
+            return "Total_Contributed_Premium > " . intval($min);
+        }
+        return "Total_Contributed_Premium BETWEEN " . intval($min) . " AND " . intval($max);
+    }, $selectedPremiumRanges);
+    $conditions[] = "(" . implode(" OR ", $premiumConditions) . ")";
+}
+
+$whereClause = !empty($conditions) ? "WHERE " . implode(" AND ", $conditions) : "";
+
+// Get party type distribution data
+$individualCount = 0;
+$companyCount = 0;
+
+// 检查数据库连接
+if (!$link) {
+    die("Connection failed: " . mysqli_connect_error());
+}
+
+$typeQuery = "SELECT Type, COUNT(*) as count FROM party " . ($whereClause ? $whereClause : "") . " GROUP BY Type";
+$result = mysqli_query($link, $typeQuery);
+
+if (!$result) {
+    echo "<!-- Query Error: " . mysqli_error($link) . " -->";
+} else {
+    // 保存结果集
+    $typeResults = [];
+    while ($row = mysqli_fetch_assoc($result)) {
+        $typeResults[] = $row;
+    }
+
+    // 处理结果集
+    foreach ($typeResults as $row) {
+        if ($row['Type'] === 'Individual') {
+            $individualCount = (int)$row['count'];
+        } else if ($row['Type'] === 'Company') {
+            $companyCount = (int)$row['count'];
+        }
+    }
+}
+
+// Get filtered age distribution data
+$filteredAgeQuery = "SELECT 
+    CASE 
+        WHEN Type = 'C' THEN 'Company'
+        WHEN TIMESTAMPDIFF(YEAR, Date_of_Birth, CURDATE()) <= 25 THEN '18-25'
+        WHEN TIMESTAMPDIFF(YEAR, Date_of_Birth, CURDATE()) <= 35 THEN '26-35'
+        WHEN TIMESTAMPDIFF(YEAR, Date_of_Birth, CURDATE()) <= 45 THEN '36-45'
+        WHEN TIMESTAMPDIFF(YEAR, Date_of_Birth, CURDATE()) <= 55 THEN '46-55'
+        ELSE '55+'
+    END as age_group,
+    COUNT(*) as count
+    FROM party 
+    " . ($whereClause ? $whereClause : "") . "
+    GROUP BY age_group
+    ORDER BY age_group";
+
+$result = mysqli_query($link, $filteredAgeQuery);
+$filteredAgeData = [];
+while ($row = mysqli_fetch_assoc($result)) {
+    $filteredAgeData[] = $row;
+}
+
+// Get claim amount distribution data
+$claimData = array();
+$claimQuery = "SELECT 
+    CASE 
+        WHEN Total_Claim_Amount <= 1000 THEN '0-1,000'
+        WHEN Total_Claim_Amount <= 5000 THEN '1,001-5,000'
+        WHEN Total_Claim_Amount <= 10000 THEN '5,001-10,000'
+        ELSE '10,000+'
+    END as range_group,
+    COUNT(*) as count
+    FROM party 
+    WHERE Total_Claim_Amount IS NOT NULL
+    " . ($whereClause ? "AND " . substr($whereClause, 6) : "") . "
+    GROUP BY range_group
+    ORDER BY MIN(Total_Claim_Amount)";
+
+$result = mysqli_query($link, $claimQuery);
+if (!$result) {
+    echo "<!-- Claim Query Error: " . mysqli_error($link) . " -->";
+} else {
+    while ($row = mysqli_fetch_assoc($result)) {
+        $claimData[] = $row;
+    }
+}
+
+// Get premium distribution data
+$premiumData = array();
+$premiumQuery = "SELECT 
+    CASE 
+        WHEN Total_Contributed_Premium <= 1000 THEN '0-1,000'
+        WHEN Total_Contributed_Premium <= 5000 THEN '1,001-5,000'
+        WHEN Total_Contributed_Premium <= 10000 THEN '5,001-10,000'
+        ELSE '10,000+'
+    END as range_group,
+    COUNT(*) as count
+    FROM party 
+    WHERE Total_Contributed_Premium IS NOT NULL
+    " . ($whereClause ? "AND " . substr($whereClause, 6) : "") . "
+    GROUP BY range_group
+    ORDER BY MIN(Total_Contributed_Premium)";
+
+$result = mysqli_query($link, $premiumQuery);
+if (!$result) {
+    echo "<!-- Premium Query Error: " . mysqli_error($link) . " -->";
+} else {
+    while ($row = mysqli_fetch_assoc($result)) {
+        $premiumData[] = $row;
+    }
+}
+
+// Get license type statistics
+$licenseQuery = "SELECT 
+    COUNT(CASE WHEN Type = 'I' AND Date_of_B_class IS NOT NULL THEN 1 END) as b_class_count,
+    COUNT(CASE WHEN Type = 'I' AND Date_of_C_class IS NOT NULL THEN 1 END) as c_class_count,
+    COUNT(CASE WHEN Type = 'C' THEN 1 END) as company_count
+    FROM party
+    " . ($whereClause ? $whereClause : "");
+$result = mysqli_query($link, $licenseQuery);
+$licenseData = mysqli_fetch_assoc($result);
+$bClassCount = $licenseData['b_class_count'];
+$cClassCount = $licenseData['c_class_count'];
+$licenseCompanyCount = $licenseData['company_count'];
+
+// Age group statistics
+$youngCount = 0;
+$middleAgedCount = 0;
+$oldCount = 0;
+foreach ($ageData as $data) {
+    if (in_array($data['age_group'], ['18-25', '26-35'])) {
+        $youngCount += $data['count'];
+    } else if (in_array($data['age_group'], ['36-45', '46-55'])) {
+        $middleAgedCount += $data['count'];
+    } else {
+        $oldCount += $data['count'];
+    }
+}
+
+// Define claimFilter to use in queries - 直接使用与状态查询相同的条件，只是加上NOT操作符
+$validCondition = ($selectedClaimRatio === 'none' ? "1=1" :
+    "((Total_Claim_Amount/Total_Contributed_Premium) < " .
+    ($selectedClaimRatio === 'less_than_5' ? '5' : ($selectedClaimRatio === 'less_than_10' ? '10' : ($selectedClaimRatio === 'less_than_20' ? '20' : '0'))) .
+    " OR (Total_Contributed_Premium > 0 AND Total_Claim_Amount = 0))");
+
+$claimFilter = "NOT (" . $validCondition . ")";
+
+// Get status distribution data for the current page (with filters)
+$statusQuery = "SELECT 
+    CASE 
+        WHEN " . $validCondition . " THEN 'Valid'
+        ELSE 'Invalid'
+    END as status,
+    COUNT(*) as count
+    FROM party 
+    " . ($whereClause ? $whereClause : "") . "
+    GROUP BY status
+    ORDER BY status";
+
+$result = mysqli_query($link, $statusQuery);
+$statusData = [];
+while ($row = mysqli_fetch_assoc($result)) {
+    $statusData[] = $row;
+}
+
+// 确保状态数据包含Valid和Invalid
+$validCount = 0;
+$invalidCount = 0;
+foreach ($statusData as $data) {
+    if ($data['status'] === 'Valid') {
+        $validCount = $data['count'];
+    } else if ($data['status'] === 'Invalid') {
+        $invalidCount = $data['count'];
+    }
+}
+
+// 如果缺少某个状态，添加该状态的数据
+$hasValid = false;
+$hasInvalid = false;
+foreach ($statusData as $data) {
+    if ($data['status'] === 'Valid') $hasValid = true;
+    if ($data['status'] === 'Invalid') $hasInvalid = true;
+}
+
+if (!$hasValid) {
+    $statusData[] = ['status' => 'Valid', 'count' => 0];
+}
+if (!$hasInvalid) {
+    $statusData[] = ['status' => 'Invalid', 'count' => 0];
+}
+
+// 按状态排序
+usort($statusData, function ($a, $b) {
+    return strcmp($a['status'], $b['status']);
+});
+
+// Get all available filter options
+$filterOptions = [
+    'types' => [],
+    'claim_ratio' => [
+        '' => '无筛选条件',
+        'less_than_5' => '小于5',
+        'less_than_10' => '小于10',
+        'less_than_20' => '小于20'
+    ],
+    'claim_ranges' => [
+        '0-10000' => '0-10,000',
+        '10001-50000' => '10,001-50,000',
+        '50001-100000' => '50,001-100,000',
+        '100001-+' => '100,001+'
+    ],
+    'premium_ranges' => [
+        '0-1000' => '0-1,000',
+        '1001-5000' => '1,001-5,000',
+        '5001-10000' => '5,001-10,000',
+        '10001-+' => '10,001+'
+    ]
+];
+
+$optionsQuery = "SELECT DISTINCT Type FROM party";
+$result = mysqli_query($link, $optionsQuery);
+while ($row = mysqli_fetch_assoc($result)) {
+    if (!in_array($row['Type'], $filterOptions['types'])) {
+        $filterOptions['types'][] = $row['Type'];
+    }
+}
+
+// Get high risk parties data - 使用与状态查询完全一致的方式获取无效数据
+$highRiskQuery = "SELECT 
+    CASE 
+        WHEN Type = 'I' THEN 'Individual'
+        WHEN Type = 'C' THEN 'Company'
+        ELSE Type
+    END as Type,
+    Party_No,
+    Name,
+    IF(Date_of_Birth IS NULL, 'Unknown', TIMESTAMPDIFF(YEAR, Date_of_Birth, CURDATE())) as Age,
+    Total_Claim_Amount,
+    Total_Contributed_Premium,
+    CASE
+        WHEN Total_Contributed_Premium > 0 THEN (Total_Claim_Amount / Total_Contributed_Premium)
+        WHEN Total_Claim_Amount > 0 AND Total_Contributed_Premium = 0 THEN 'Infinity'
+        ELSE 'N/A' 
+    END as claim_ratio
+FROM party
+WHERE CASE 
+        WHEN " . $validCondition . " THEN 0
+        ELSE 1
+    END = 1
+" . ($whereClause ? " AND " . substr($whereClause, 6) : "") . "
+ORDER BY Type, CASE 
+    WHEN Total_Contributed_Premium > 0 THEN Total_Claim_Amount / Total_Contributed_Premium
+    WHEN Total_Claim_Amount > 0 AND Total_Contributed_Premium = 0 THEN 9999999
+    ELSE 0
+END DESC";
+
+$result = mysqli_query($link, $highRiskQuery);
+$highRiskData = [];
+while ($row = mysqli_fetch_assoc($result)) {
+    $highRiskData[] = $row;
+}
+
+// 按Type分组排序
+usort($highRiskData, function ($a, $b) {
+    if ($a['Type'] != $b['Type']) {
+        return $a['Type'] <=> $b['Type'];
+    }
+
+    // 为了处理非数值的比率（如Infinity或N/A），先检查是否为数值
+    $ratio_a = is_numeric($a['claim_ratio']) ? floatval($a['claim_ratio']) : PHP_FLOAT_MAX;
+    $ratio_b = is_numeric($b['claim_ratio']) ? floatval($b['claim_ratio']) : PHP_FLOAT_MAX;
+
+    return $ratio_b <=> $ratio_a;
+});
+
+mysqli_close($link);
+?>
+
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Party Analysis</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.7.0/dist/chart.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.0.0"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        Chart.register(ChartDataLabels);
+    </script>
+    <!-- 添加 Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- 添加 Font Awesome 图标 -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Roboto', sans-serif;
+            background-color: #f8f9fa;
+            color: #333;
+            line-height: 1.6;
+        }
+
+        .dashboard {
+            max-width: 1600px;
+            margin: 0 auto;
+            padding: 30px;
+        }
+
+        .dashboard-header {
+            text-align: center;
+            margin-bottom: 40px;
+            position: relative;
+            padding-bottom: 15px;
+        }
+
+        .dashboard-header:after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 100px;
+            height: 3px;
+            background: linear-gradient(to right, #36A2EB, #4BC0C0);
+        }
+
+        .dashboard-title {
+            font-size: 32px;
+            font-weight: 500;
+            color: #2c3e50;
+            margin-bottom: 10px;
+        }
+
+        .filter-section {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            margin-bottom: 30px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+        }
+
+        .filter-title {
+            font-size: 18px;
+            font-weight: 500;
+            margin-bottom: 20px;
+            color: #2c3e50;
+        }
+
+        .filter-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .filter-item {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .filter-label {
+            font-size: 14px;
+            font-weight: 500;
+            color: #2c3e50;
+            margin-bottom: 8px;
+        }
+
+        .select2-container {
+            width: 100% !important;
+        }
+
+        .select2-container--default .select2-selection--multiple {
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            min-height: 42px;
+        }
+
+        .select2-container--default .select2-selection--multiple .select2-selection__choice {
+            background-color: #e2e8f0;
+            border: none;
+            border-radius: 4px;
+            padding: 4px 8px;
+            margin: 4px;
+        }
+
+        .select2-container--default .select2-selection--multiple .select2-selection__choice__remove {
+            margin-right: 5px;
+            color: #4a5568;
+        }
+
+        .select2-dropdown {
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .select2-search__field {
+            padding: 8px !important;
+        }
+
+        .select2-results__option {
+            padding: 8px 12px;
+        }
+
+        .select2-results__option--highlighted {
+            background-color: #4299e1 !important;
+        }
+
+        .apply-btn {
+            margin-top: 10px;
+            width: auto;
+            min-width: 200px;
+        }
+
+        .charts-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 30px;
+            margin-top: 30px;
+        }
+
+        .chart-card {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+            transition: all 0.3s ease;
+            resize: both;
+            overflow: auto;
+            min-width: 300px;
+            min-height: 300px;
+        }
+
+        .chart-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 6px 12px rgba(0, 0, 0, 0.1);
+        }
+
+        .chart-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #f1f3f5;
+        }
+
+        .chart-title {
+            font-size: 20px;
+            font-weight: 500;
+            color: #2c3e50;
+            margin: 0;
+        }
+
+        .btn-primary {
+            background-color: #4BC0C0;
+            border-color: #4BC0C0;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 14px;
+            transition: all 0.3s ease;
+        }
+
+        .btn-primary:hover {
+            background-color: #3da8a8;
+            border-color: #3da8a8;
+            transform: translateY(-2px);
+        }
+
+        .btn-primary i {
+            margin-right: 6px;
+        }
+
+        .chart-container {
+            height: 400px;
+            position: relative;
+            width: 100%;
+            min-height: 300px;
+        }
+
+        @media (max-width: 1200px) {
+            .charts-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .chart-container {
+                height: 350px;
+            }
+
+            .dashboard {
+                padding: 20px;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .filter-item {
+                min-width: 100%;
+            }
+
+            .chart-container {
+                height: 300px;
+            }
+
+            .dashboard-title {
+                font-size: 24px;
+            }
+        }
+
+        .filter-dropdown {
+            position: relative;
+            width: 100%;
+        }
+
+        .filter-button {
+            width: 100%;
+            padding: 10px 15px;
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            text-align: left;
+            cursor: pointer;
+            font-size: 14px;
+            color: #2c3e50;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+            align-items: center;
+            min-height: 42px;
+        }
+
+        .filter-button .selected-item {
+            background-color: #e2e8f0;
+            padding: 2px 8px;
+            border-radius: 4px;
+            color: #2c3e50;
+            font-size: 13px;
+            display: inline-block;
+            margin: 2px;
+        }
+
+        .filter-button:after {
+            content: '▼';
+            font-size: 12px;
+            margin-left: auto;
+        }
+
+        .filter-dropdown-content {
+            display: none;
+            position: absolute;
+            top: 100%;
+            left: 0;
+            width: 100%;
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            z-index: 1000;
+            max-height: 300px;
+            overflow-y: auto;
+            margin-top: 5px;
+        }
+
+        .filter-dropdown.active .filter-dropdown-content {
+            display: block;
+        }
+
+        .filter-option-item {
+            padding: 8px 15px;
+            display: flex;
+            align-items: center;
+            cursor: pointer;
+        }
+
+        .filter-option-item:hover {
+            background: #f8f9fa;
+        }
+
+        .filter-option-item input[type="checkbox"] {
+            margin-right: 10px;
+            width: 16px;
+            height: 16px;
+        }
+
+        .filter-actions {
+            padding: 10px 15px;
+            border-top: 1px solid #e2e8f0;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .filter-confirm,
+        .filter-clear {
+            padding: 5px 10px;
+            border-radius: 4px;
+            border: none;
+            cursor: pointer;
+            font-size: 13px;
+        }
+
+        .filter-confirm {
+            background: #36A2EB;
+            color: white;
+        }
+
+        .filter-clear {
+            background: #f1f3f5;
+            color: #4a5568;
+            margin-right: 10px;
+        }
+
+        .selected-count {
+            background: #e2e8f0;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 12px;
+            margin-left: 8px;
+        }
+
+        /* 调整应用按钮样式 */
+        .apply-btn {
+            background: linear-gradient(to right, #36A2EB, #4BC0C0);
+            color: white;
+            border: none;
+            padding: 12px 25px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-top: 20px;
+            width: auto;
+            min-width: 200px;
+            display: block;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        .apply-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        /* 添加新的拉伸手柄样式 */
+        .chart-card {
+            position: relative;
+            resize: both;
+            /* 允许双向调整大小 */
+            overflow: auto;
+        }
+
+        /* 自定义拉伸手柄的样式 */
+        .chart-card::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            right: 0;
+            width: 15px;
+            height: 15px;
+            cursor: nw-resize;
+            background:
+                linear-gradient(45deg, transparent 2px, #36A2EB 2px, #36A2EB 3px, transparent 3px),
+                linear-gradient(-45deg, transparent 2px, #36A2EB 2px, #36A2EB 3px, transparent 3px),
+                linear-gradient(135deg, transparent 2px, #36A2EB 2px, #36A2EB 3px, transparent 3px),
+                linear-gradient(-135deg, transparent 2px, #36A2EB 2px, #36A2EB 3px, transparent 3px);
+            background-size: 10px 10px;
+            background-position: center;
+            opacity: 0.7;
+        }
+
+        .chart-card:hover::after {
+            opacity: 1;
+        }
+
+        .strategy-section {
+            margin-top: 40px;
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+        }
+
+        .section-title {
+            font-size: 24px;
+            font-weight: 500;
+            color: #2c3e50;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #f1f3f5;
+        }
+
+        .strategy-cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+        }
+
+        .strategy-card {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 20px;
+            border-left: 4px solid #36A2EB;
+        }
+
+        .strategy-title {
+            font-size: 18px;
+            font-weight: 500;
+            color: #2c3e50;
+            margin-bottom: 10px;
+        }
+
+        .strategy-content {
+            color: #4a5568;
+            line-height: 1.6;
+        }
+
+        /* 修改导航栏样式 */
+        .navbar {
+            background-color: white;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            padding: 1rem 0;
+            margin-bottom: 2rem;
+        }
+
+        .navbar .admin-text {
+            color: #1a237e;
+            /* 深蓝色 */
+            font-weight: 700;
+        }
+
+        .navbar .btn-light {
+            color: #2c3e50;
+            font-weight: 500;
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            transition: all 0.3s ease;
+            border: 1px solid #e2e8f0;
+        }
+
+        .navbar .btn-light:hover {
+            background-color: #f8f9fa;
+            color: #36A2EB;
+            transform: translateY(-1px);
+        }
+
+        .navbar .btn-light i {
+            margin-right: 0.5rem;
+        }
+
+        /* 添加新的样式 */
+        .high-risk-section {
+            margin-bottom: 30px;
+        }
+
+        .high-risk-title {
+            color: #dc3545;
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 20px;
+        }
+
+        .table {
+            background: white;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }
+
+        .table thead th {
+            background-color: #f8f9fa;
+            border-bottom: 2px solid #dee2e6;
+            color: #2c3e50;
+            font-weight: 600;
+            padding: 12px;
+        }
+
+        .table tbody td {
+            padding: 12px;
+            vertical-align: middle;
+        }
+
+        .table-hover tbody tr:hover {
+            background-color: #f8f9fa;
+        }
+
+        .recommendations-section {
+            margin-top: 30px;
+        }
+
+        .recommendations-title {
+            color: #dc3545;
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 20px;
+        }
+
+        .recommendations-content {
+            background: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }
+
+        .recommendation-item {
+            margin-bottom: 15px;
+            font-size: 16px;
+        }
+
+        .recommendations-list {
+            list-style-type: none;
+            padding-left: 0;
+        }
+
+        .recommendations-list li {
+            margin-bottom: 12px;
+            padding-left: 25px;
+            position: relative;
+        }
+
+        .recommendations-list li:before {
+            content: "•";
+            color: #dc3545;
+            font-weight: bold;
+            position: absolute;
+            left: 0;
+        }
+
+        .text-danger {
+            color: #dc3545 !important;
+        }
+
+        /* 添加导出按钮样式 */
+        .btn-success {
+            background-color: #28a745;
+            border-color: #28a745;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 14px;
+            transition: all 0.3s ease;
+        }
+
+        .btn-success:hover {
+            background-color: #218838;
+            border-color: #1e7e34;
+            transform: translateY(-2px);
+        }
+
+        .table-secondary {
+            background-color: #f8f9fa;
+        }
+
+        .table-secondary td {
+            font-weight: 600;
+            color: #2c3e50;
+        }
+    </style>
+</head>
+
+<body>
+    <!-- Navigation Bar -->
+    <nav class="navbar navbar-expand-lg navbar-light">
+        <div class="container">
+            <div class="navbar-brand admin-text">Admin Center</div>
+            <div class="ms-auto">
+                <a href="DataAnalysisCatalog.php" class="btn btn-light me-2">
+                    <i class="fas fa-th-large me-1"></i>Back to Catalog
+                </a>
+                <a href="logout.php" class="btn btn-light">
+                    <i class="fas fa-sign-out-alt me-1"></i>Logout
+                </a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="dashboard">
+        <div class="dashboard-header">
+            <h1 class="dashboard-title">Party Analysis Dashboard</h1>
+        </div>
+
+        <!-- Filter Section -->
+        <div class="filter-section">
+            <h2 class="filter-title">Filter Options</h2>
+            <form id="filterForm" method="GET">
+                <div class="filter-grid">
+                    <div class="filter-item">
+                        <label class="filter-label">Party Type</label>
+                        <div class="filter-dropdown" id="typeDropdown">
+                            <button type="button" class="filter-button">
+                                <?php echo !empty($selectedTypes) ? implode(', ', $selectedTypes) : 'Select party types'; ?>
+                            </button>
+                            <div class="filter-dropdown-content">
+                                <div class="filter-option-item">
+                                    <input type="checkbox" id="selectAllTypes" />
+                                    <label for="selectAllTypes">All</label>
+                                </div>
+                                <?php foreach ($filterOptions['types'] as $type): ?>
+                                    <div class="filter-option-item">
+                                        <input type="checkbox" name="types[]" value="<?php echo $type; ?>"
+                                            <?php echo in_array($type, $selectedTypes) ? 'checked' : ''; ?> />
+                                        <label><?php echo $type; ?></label>
+                                    </div>
+                                <?php endforeach; ?>
+                                <div class="filter-actions">
+                                    <div>
+                                        <button type="button" class="filter-clear">Clear</button>
+                                        <button type="button" class="filter-confirm">Confirm</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="filter-item">
+                        <label class="filter-label">Age Group</label>
+                        <div class="filter-dropdown" id="ageDropdown">
+                            <button type="button" class="filter-button">
+                                <?php echo !empty($_GET['age_groups']) ? implode(', ', $_GET['age_groups']) : 'Select age groups'; ?>
+                            </button>
+                            <div class="filter-dropdown-content">
+                                <div class="filter-option-item">
+                                    <input type="checkbox" id="selectAllAges" />
+                                    <label for="selectAllAges">All</label>
+                                </div>
+                                <?php foreach ($ageData as $age): ?>
+                                    <div class="filter-option-item">
+                                        <input type="checkbox" name="age_groups[]" value="<?php echo $age['age_group']; ?>"
+                                            <?php echo in_array($age['age_group'], isset($_GET['age_groups']) ? $_GET['age_groups'] : []) ? 'checked' : ''; ?> />
+                                        <label><?php echo $age['age_group']; ?></label>
+                                    </div>
+                                <?php endforeach; ?>
+                                <div class="filter-option-item">
+                                    <input type="checkbox" name="age_groups[]" value="Company"
+                                        <?php echo in_array('Company', isset($_GET['age_groups']) ? $_GET['age_groups'] : []) ? 'checked' : ''; ?> />
+                                    <label>Company</label>
+                                </div>
+                                <div class="filter-actions">
+                                    <div>
+                                        <button type="button" class="filter-clear">Clear</button>
+                                        <button type="button" class="filter-confirm">Confirm</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="filter-item">
+                        <label class="filter-label">License Type</label>
+                        <div class="filter-dropdown" id="licenseDropdown">
+                            <button type="button" class="filter-button">
+                                <?php
+                                $selectedLicenses = isset($_GET['license_types']) ? $_GET['license_types'] : [];
+                                echo !empty($selectedLicenses) ? implode(', ', array_map(function ($type) {
+                                    return $type . ' Class';
+                                }, $selectedLicenses)) : 'Select license types';
+                                ?>
+                            </button>
+                            <div class="filter-dropdown-content">
+                                <div class="filter-option-item">
+                                    <input type="checkbox" id="selectAllLicenses" />
+                                    <label for="selectAllLicenses">All</label>
+                                </div>
+                                <div class="filter-option-item">
+                                    <input type="checkbox" name="license_types[]" value="B"
+                                        <?php echo in_array('B', isset($_GET['license_types']) ? $_GET['license_types'] : []) ? 'checked' : ''; ?> />
+                                    <label>B Class</label>
+                                </div>
+                                <div class="filter-option-item">
+                                    <input type="checkbox" name="license_types[]" value="C"
+                                        <?php echo in_array('C', isset($_GET['license_types']) ? $_GET['license_types'] : []) ? 'checked' : ''; ?> />
+                                    <label>C Class</label>
+                                </div>
+                                <div class="filter-option-item">
+                                    <input type="checkbox" name="license_types[]" value="Company"
+                                        <?php echo in_array('Company', isset($_GET['license_types']) ? $_GET['license_types'] : []) ? 'checked' : ''; ?> />
+                                    <label>Company</label>
+                                </div>
+                                <div class="filter-actions">
+                                    <div>
+                                        <button type="button" class="filter-clear">Clear</button>
+                                        <button type="button" class="filter-confirm">Confirm</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <button type="submit" class="apply-btn">Apply Filters</button>
+            </form>
+        </div>
+
+        <!-- Charts Grid -->
+        <div class="charts-grid">
+            <div class="chart-card">
+                <div class="chart-header">
+                    <h2 class="chart-title">Party Type Distribution</h2>
+                </div>
+                <div class="chart-container">
+                    <!-- 替换饼图为表格 -->
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead>
+                                <tr>
+                                    <th>Type</th>
+                                    <th>Count</th>
+                                    <th>Percentage</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php
+                                $totalParty = $individualCount + $companyCount;
+                                $individualPercentage = $totalParty > 0 ? ($individualCount / $totalParty) * 100 : 0;
+                                $companyPercentage = $totalParty > 0 ? ($companyCount / $totalParty) * 100 : 0;
+                                ?>
+                                <tr>
+                                    <td><span class="badge bg-danger">Individual</span></td>
+                                    <td><?php echo $individualCount; ?></td>
+                                    <td><?php echo number_format($individualPercentage, 1); ?>%</td>
+                                </tr>
+                                <tr>
+                                    <td><span class="badge bg-primary">Company</span></td>
+                                    <td><?php echo $companyCount; ?></td>
+                                    <td><?php echo number_format($companyPercentage, 1); ?>%</td>
+                                </tr>
+                                <tr class="table-secondary">
+                                    <td><strong>Total</strong></td>
+                                    <td><strong><?php echo $totalParty; ?></strong></td>
+                                    <td><strong>100%</strong></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- 添加详细调试信息 -->
+                    <div class="mt-3">
+                        <p class="small text-muted">PHP变量值：individualCount = <?php echo $individualCount; ?>, companyCount = <?php echo $companyCount; ?></p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="chart-card">
+                <div class="chart-header">
+                    <h2 class="chart-title">Party Status Distribution</h2>
+                    <a href="party_status_edit.php" class="btn btn-primary">
+                        <i class="fas fa-edit"></i> Edit
+                    </a>
+                </div>
+                <div class="chart-container">
+                    <canvas id="statusChart"></canvas>
+                </div>
+            </div>
+
+            <div class="chart-card">
+                <div class="chart-header">
+                    <h2 class="chart-title">Claim Amount Distribution</h2>
+                </div>
+                <div class="chart-container">
+                    <canvas id="claimChart"></canvas>
+                </div>
+            </div>
+
+            <div class="chart-card">
+                <div class="chart-header">
+                    <h2 class="chart-title">Premium Distribution</h2>
+                </div>
+                <div class="chart-container">
+                    <canvas id="premiumChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Strategy Section -->
+        <div class="strategy-section">
+            <h2 class="section-title">Party Insights & Recommendations</h2>
+
+            <!-- High Risk Parties Table -->
+            <div class="high-risk-section">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h3 class="high-risk-title">High Risk Customer Analysis</h3>
+                    <div>
+                        <button type="button" class="btn btn-success" onclick="exportToExcel()">
+                            <i class="fas fa-file-excel me-2"></i>Export to Excel
+                        </button>
+                    </div>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-hover" id="highRiskTable">
+                        <thead>
+                            <tr>
+                                <th>Type</th>
+                                <th>Party No.</th>
+                                <th>Name</th>
+                                <th>Age</th>
+                                <th>Total Claim Amount</th>
+                                <th>Total Contributed Premium</th>
+                                <th>Claim Ratio</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php
+                            $currentType = '';
+                            foreach ($highRiskData as $party):
+                                if ($currentType !== $party['Type']):
+                                    $currentType = $party['Type'];
+                            ?>
+                                    <tr class="table-secondary">
+                                        <td colspan="7"><strong><?php echo $party['Type']; ?> Customers</strong></td>
+                                    </tr>
+                                <?php endif; ?>
+                                <tr>
+                                    <td><?php echo htmlspecialchars($party['Type']); ?></td>
+                                    <td><?php echo htmlspecialchars($party['Party_No']); ?></td>
+                                    <td><?php echo htmlspecialchars($party['Name']); ?></td>
+                                    <td><?php echo htmlspecialchars($party['Age']); ?></td>
+                                    <td><?php echo number_format($party['Total_Claim_Amount'], 2); ?></td>
+                                    <td><?php echo number_format($party['Total_Contributed_Premium'], 2); ?></td>
+                                    <td>
+                                        <?php
+                                        if (is_numeric($party['claim_ratio'])) {
+                                            echo number_format($party['claim_ratio'], 2);
+                                        } else {
+                                            echo htmlspecialchars($party['claim_ratio']);
+                                        }
+                                        ?>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                            <?php if (count($highRiskData) < $invalidCount): ?>
+                                <tr class="table-danger">
+                                    <td colspan="7"><strong>警告: <?php echo $invalidCount - count($highRiskData); ?> 条高风险记录未显示!</strong>
+                                        这些未显示的记录可能包含NULL值或无法计算有效索赔比率的情况（如保费为0但有索赔金额，或两者均为0）。
+                                        <button class="btn btn-sm btn-info ms-2" type="button" data-bs-toggle="collapse" data-bs-target="#riskDefinitionInfo">
+                                            <i class="fas fa-info-circle"></i> 查看详情
+                                        </button>
+                                    </td>
+                                </tr>
+                            <?php endif; ?>
+                        </tbody>
+                    </table>
+
+                    <div class="collapse mt-3" id="riskDefinitionInfo">
+                        <div class="card card-body bg-light">
+                            <h5>风险客户定义说明</h5>
+                            <p>高风险客户是指索赔金额与贡献保费的比率超过设定阈值的客户。当前阈值设置为:
+                                <strong>
+                                    <?php
+                                    echo $selectedClaimRatio === 'none' ? '无限制' : ($selectedClaimRatio === 'less_than_5' ? '5' : ($selectedClaimRatio === 'less_than_10' ? '10' : ($selectedClaimRatio === 'less_than_20' ? '20' : '未知')));
+                                    ?>
+                                </strong>
+                            </p>
+                            <p>以下情况的客户被认为是高风险的，但可能无法在表格中显示：</p>
+                            <ul>
+                                <li>贡献保费为0但有索赔金额的客户（比率为无穷大）</li>
+                                <li>贡献保费为NULL的客户（无法计算比率）</li>
+                                <li>索赔金额为NULL的客户（无法计算比率）</li>
+                                <li>贡献保费和索赔金额都为0的客户（无法计算比率）</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Recommendations -->
+            <div class="recommendations-section">
+                <h3 class="recommendations-title">Risk Control Recommendations</h3>
+                <div class="recommendations-content">
+                    <p class="recommendation-item"><strong class="text-danger">⚠️ High Risk Customer Management:</strong> For customers with significantly higher claim amounts than premium contributions, the following measures are recommended:</p>
+                    <ul class="recommendations-list">
+                        <li><strong class="text-danger">1. Business Relationship Adjustment:</strong> Consider reducing business dealings with high-risk customers or increasing their premium rates.</li>
+                        <li><strong class="text-danger">2. Product Optimization:</strong> Develop stricter risk control product solutions for high-risk customer groups.</li>
+                        <li><strong class="text-danger">3. Customer Classification:</strong> Establish a customer risk level assessment system for focused monitoring of high-risk customers.</li>
+                        <li><strong class="text-danger">4. Claim Review:</strong> Strengthen the claim review process for high-risk customers to ensure claim rationality.</li>
+                        <li><strong class="text-danger">5. Regular Assessment:</strong> Establish a regular risk assessment mechanism to timely adjust customer risk levels.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Dropdown functionality implementation
+        document.addEventListener('DOMContentLoaded', function() {
+            document.querySelectorAll('.filter-dropdown').forEach(dropdown => {
+                const button = dropdown.querySelector('.filter-button');
+                const content = dropdown.querySelector('.filter-dropdown-content');
+                const selectAll = dropdown.querySelector('input[id^="selectAll"]');
+                const options = dropdown.querySelectorAll('input[type="checkbox"]:not([id^="selectAll"])');
+                const clearBtn = dropdown.querySelector('.filter-clear');
+                const confirmBtn = dropdown.querySelector('.filter-confirm');
+
+                // Show/hide dropdown content on button click
+                button.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    dropdown.classList.toggle('active');
+                    // Close other dropdowns
+                    document.querySelectorAll('.filter-dropdown').forEach(other => {
+                        if (other !== dropdown) other.classList.remove('active');
+                    });
+                });
+
+                // Update button text function
+                function updateButtonText() {
+                    const selectedOptions = Array.from(options)
+                        .filter(opt => opt.checked)
+                        .map(opt => opt.nextElementSibling.textContent.trim());
+
+                    if (selectedOptions.length > 0) {
+                        button.innerHTML = selectedOptions.map(opt =>
+                            `<span class="selected-item">${opt}</span>`
+                        ).join('');
+                    } else {
+                        // Set default text based on dropdown type
+                        if (dropdown.id === 'typeDropdown') {
+                            button.innerHTML = 'Select party types';
+                        } else if (dropdown.id === 'ageDropdown') {
+                            button.innerHTML = 'Select age groups';
+                        } else if (dropdown.id === 'licenseDropdown') {
+                            button.innerHTML = 'Select license types';
+                        }
+                    }
+                }
+
+                // Select all functionality
+                if (selectAll) {
+                    selectAll.addEventListener('change', () => {
+                        options.forEach(option => {
+                            option.checked = selectAll.checked;
+                        });
+                        updateButtonText();
+                    });
+                }
+
+                // Option change updates
+                options.forEach(option => {
+                    option.addEventListener('change', () => {
+                        if (selectAll) {
+                            selectAll.checked = Array.from(options).every(opt => opt.checked);
+                            selectAll.indeterminate = Array.from(options).some(opt => opt.checked) && !selectAll.checked;
+                        }
+                        updateButtonText();
+                    });
+                });
+
+                // Clear button functionality
+                clearBtn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    options.forEach(option => option.checked = false);
+                    if (selectAll) selectAll.checked = false;
+                    updateButtonText();
+                });
+
+                // Confirm button functionality
+                confirmBtn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    dropdown.classList.remove('active');
+                    updateButtonText();
+                });
+
+                // Initialize button text
+                updateButtonText();
+            });
+
+            // Close dropdowns when clicking outside
+            document.addEventListener('click', (e) => {
+                if (!e.target.closest('.filter-dropdown')) {
+                    document.querySelectorAll('.filter-dropdown').forEach(dropdown => {
+                        dropdown.classList.remove('active');
+                    });
+                }
+            });
+        });
+
+        // 使用PHP变量并添加调试输出
+        console.log('PHP变量直接输出: individualCount = <?php echo $individualCount; ?>, companyCount = <?php echo $companyCount; ?>');
+
+        const chartData = {
+            individual: <?php echo json_encode($individualCount); ?>,
+            company: <?php echo json_encode($companyCount); ?>,
+            licenseCompanyCount: <?php echo json_encode($licenseCompanyCount); ?>
+        };
+
+        console.log('JavaScript变量: chartData =', chartData);
+
+        // 声明图表实例变量
+        let statusChart, claimChart, premiumChart;
+
+        // 初始化所有图表的函数
+        function initializeCharts() {
+            // Customer status distribution chart
+            const statusChartElement = document.getElementById('statusChart');
+            if (statusChartElement) {
+                if (statusChart) {
+                    statusChart.destroy();
+                }
+                statusChart = new Chart(statusChartElement, {
+                    type: 'pie',
+                    data: {
+                        labels: <?php echo json_encode(array_column($statusData, 'status')); ?>,
+                        datasets: [{
+                            data: <?php echo json_encode(array_map('intval', array_column($statusData, 'count'))); ?>,
+                            backgroundColor: ['#4BC0C0', '#FF9F40']
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                position: 'right',
+                                labels: {
+                                    padding: 20,
+                                    font: {
+                                        size: 13
+                                    }
+                                }
+                            },
+                            datalabels: {
+                                color: '#fff',
+                                font: {
+                                    weight: 'bold',
+                                    size: 13
+                                },
+                                textAlign: 'center',
+                                offset: 8,
+                                formatter: (value, ctx) => {
+                                    const total = ctx.dataset.data.reduce((acc, curr) => acc + curr, 0);
+                                    const percentage = ((value / total) * 100).toFixed(1);
+                                    return `${percentage}%\n(${value})`;
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+
+            // Claim Amount Distribution chart
+            const claimChartElement = document.getElementById('claimChart');
+            if (claimChartElement) {
+                if (claimChart) {
+                    claimChart.destroy();
+                }
+                claimChart = new Chart(claimChartElement, {
+                    type: 'bar',
+                    data: {
+                        labels: <?php echo json_encode(array_column($claimData, 'range_group')); ?>,
+                        datasets: [{
+                            label: 'Number of Claims',
+                            data: <?php echo json_encode(array_map('intval', array_column($claimData, 'count'))); ?>,
+                            backgroundColor: '#36A2EB',
+                            borderColor: '#36A2EB',
+                            borderWidth: 1
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                display: false
+                            },
+                            datalabels: {
+                                display: true,
+                                color: '#000',
+                                anchor: 'end',
+                                align: 'top',
+                                offset: 4,
+                                font: {
+                                    weight: 'bold',
+                                    size: 12
+                                }
+                            }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                ticks: {
+                                    stepSize: 1
+                                }
+                            },
+                            x: {
+                                grid: {
+                                    display: false
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+
+            // Premium Distribution chart
+            const premiumChartElement = document.getElementById('premiumChart');
+            if (premiumChartElement) {
+                if (premiumChart) {
+                    premiumChart.destroy();
+                }
+                premiumChart = new Chart(premiumChartElement, {
+                    type: 'bar',
+                    data: {
+                        labels: <?php echo json_encode(array_column($premiumData, 'range_group')); ?>,
+                        datasets: [{
+                            label: 'Number of Premiums',
+                            data: <?php echo json_encode(array_map('intval', array_column($premiumData, 'count'))); ?>,
+                            backgroundColor: '#FF6384',
+                            borderColor: '#FF6384',
+                            borderWidth: 1
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                display: false
+                            },
+                            datalabels: {
+                                display: true,
+                                color: '#000',
+                                anchor: 'end',
+                                align: 'top',
+                                offset: 4,
+                                font: {
+                                    weight: 'bold',
+                                    size: 12
+                                }
+                            }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                ticks: {
+                                    stepSize: 1
+                                }
+                            },
+                            x: {
+                                grid: {
+                                    display: false
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        }
+
+        // 在 DOM 加载完成后初始化图表
+        document.addEventListener('DOMContentLoaded', function() {
+            initializeCharts();
+        });
+
+        // 在筛选应用后更新图表
+        document.getElementById('filterForm').addEventListener('submit', function(e) {
+            // 不需要阻止表单默认提交行为，因为我们需要刷新页面获取新数据
+        });
+
+        // 添加导出Excel功能
+        function exportToExcel() {
+            // 创建CSV内容
+            let csvContent = "Type,Party No.,Name,Age,Total Claim Amount,Total Contributed Premium,Claim Ratio\n";
+
+            // 获取表格数据
+            const table = document.getElementById('highRiskTable');
+            const rows = table.getElementsByTagName('tr');
+
+            for (let i = 1; i < rows.length; i++) {
+                const row = rows[i];
+                // 跳过分组标题行和警告行
+                if (row.classList.contains('table-secondary') || row.classList.contains('table-danger')) continue;
+
+                const cells = row.getElementsByTagName('td');
+                let rowData = [];
+
+                for (let j = 0; j < cells.length; j++) {
+                    // 处理CSV中的特殊字符，如逗号和引号
+                    let cellText = cells[j].textContent.trim();
+                    if (cellText.includes(',') || cellText.includes('"') || cellText.includes('\n')) {
+                        cellText = '"' + cellText.replace(/"/g, '""') + '"';
+                    }
+                    rowData.push(cellText);
+                }
+
+                csvContent += rowData.join(',') + '\n';
+            }
+
+            // 创建Blob对象
+            const blob = new Blob([csvContent], {
+                type: 'text/csv;charset=utf-8;'
+            });
+
+            // 创建下载链接
+            const link = document.createElement('a');
+            const url = URL.createObjectURL(blob);
+
+            link.setAttribute('href', url);
+            link.setAttribute('download', 'high_risk_customers.csv');
+            link.style.visibility = 'hidden';
+
+            // 添加到文档并触发点击
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+    </script>
+</body>
+
+</html>

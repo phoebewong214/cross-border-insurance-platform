@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="80" height="80" viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
+    <style>
+        .shield { fill: none; stroke: #01459C; stroke-width: 3; }
+        .check { fill: #01459C; }
+    </style>
+    <path class="shield" d="M40,10 L15,20 L15,40 C15,55 25,65 40,70 C55,65 65,55 65,40 L65,20 L40,10 Z"/>
+    <path class="check" d="M35,45 L25,35 L28,32 L35,39 L52,22 L55,25 L35,45 Z"/>
+</svg> 

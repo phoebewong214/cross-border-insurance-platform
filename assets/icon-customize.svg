@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="80" height="80" viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
+    <style>
+        .gear { fill: none; stroke: #01459C; stroke-width: 3; }
+        .dot { fill: #01459C; }
+    </style>
+    <circle class="gear" cx="40" cy="40" r="25"/>
+    <circle class="gear" cx="40" cy="40" r="15"/>
+    <circle class="dot" cx="40" cy="15" r="4"/>
+    <circle class="dot" cx="40" cy="65" r="4"/>
+    <circle class="dot" cx="15" cy="40" r="4"/>
+    <circle class="dot" cx="65" cy="40" r="4"/>
+    <circle class="dot" cx="57" cy="23" r="4"/>
+    <circle class="dot" cx="23" cy="57" r="4"/>
+    <circle class="dot" cx="57" cy="57" r="4"/>
+    <circle class="dot" cx="23" cy="23" r="4"/>
+</svg> 
